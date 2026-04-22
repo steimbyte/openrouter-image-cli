@@ -1,0 +1,14 @@
+{
+  "name": "openrouter-image-cli",
+  "version": "1.0.0",
+  "description": "OpenRouter Image Generation CLI with full API support",
+  "main": "openrouter-img",
+  "bin": {
+    "openrouter-img": "./openrouter-img"
+  },
+  "scripts": {
+    "test": "node openrouter-img -l"
+  },
+  "keywords": ["openrouter", "image-generation", "cli", "ai"],
+  "license": "MIT"
+}

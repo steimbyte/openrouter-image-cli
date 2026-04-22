@@ -1,0 +1,444 @@
+#!/usr/bin/env node
+
+/**
+ * OpenRouter Image Generation CLI v2.0
+ * Full OpenRouter API Support
+ * 
+ * Usage: openrouter-img [options]
+ * 
+ * All OpenRouter Chat API Parameters Supported:
+ * https://openrouter.ai/docs/api-reference/chat-completions
+ */
+
+const fs = require('fs');
+const path = require('path');
+const https = require('https');
+
+// Paths
+const CONFIG_FILE = path.join(process.env.HOME || '', '.local', 'share', 'openrouter-img', 'config.json');
+const OUTPUT_DIR = path.join(process.env.HOME || '', 'Bilder');
+
+// Load config
+function loadConfig() {
+  const defaultConfig = {
+    apiKey: null,
+    defaultModel: 'sourceful/riverflow-v2-pro'
+  };
+  if (fs.existsSync(CONFIG_FILE)) {
+    try {
+      const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+      return { ...defaultConfig, ...config };
+    } catch (e) {}
+  }
+  return defaultConfig;
+}
+
+const config = loadConfig();
+
+// Parse arguments
+const args = process.argv.slice(2);
+const options = {
+  // Core params
+  prompt: null,
+  model: config.defaultModel,
+  output: null,
+  outputDir: OUTPUT_DIR,
+  
+  // Message params
+  systemPrompt: null,
+  
+  // Generation params
+  maxTokens: null,
+  temperature: null,
+  topP: null,
+  topK: null,
+  stop: null,
+  seed: null,
+  presencePenalty: null,
+  frequencyPenalty: null,
+  
+  // Response params
+  responseFormat: null,
+  
+  // Reasoning (for thinking models)
+  reasoning: null,
+  includeReasoning: null,
+  
+  // Modality params
+  modalities: ['image'],
+  
+  // Image params
+  n: 1,
+  aspectRatio: null,
+  resolution: null,
+  
+  // Other
+  retry: 3,
+  verbose: false,
+  listModels: false,
+  apiKey: process.env.OPENROUTER_API_KEY || config.apiKey
+};
+
+// Parse args
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  const next = args[i + 1];
+  
+  // Core
+  if (['-p', '--prompt'].includes(arg)) { options.prompt = next; i++; }
+  else if (['-m', '--model'].includes(arg)) { options.model = next; i++; }
+  else if (['-o', '--output'].includes(arg)) { options.output = next; i++; }
+  else if (['-d', '--dir'].includes(arg)) { options.outputDir = next; i++; }
+  
+  // System prompt
+  else if (['-s', '--system'].includes(arg)) { options.systemPrompt = next; i++; }
+  
+  // Generation
+  else if (['--max-tokens'].includes(arg)) { options.maxTokens = parseInt(next); i++; }
+  else if (['--temperature'].includes(arg)) { options.temperature = parseFloat(next); i++; }
+  else if (['--top-p'].includes(arg)) { options.topP = parseFloat(next); i++; }
+  else if (['--top-k'].includes(arg)) { options.topK = parseInt(next); i++; }
+  else if (['--stop'].includes(arg)) { options.stop = next.split(',').map(s => s.trim()); i++; }
+  else if (['--seed'].includes(arg)) { options.seed = parseInt(next); i++; }
+  else if (['--presence-penalty'].includes(arg)) { options.presencePenalty = parseFloat(next); i++; }
+  else if (['--frequency-penalty'].includes(arg)) { options.frequencyPenalty = parseFloat(next); i++; }
+  
+  // Response
+  else if (['--response-format'].includes(arg)) { options.responseFormat = next; i++; }
+  
+  // Reasoning
+  else if (['--reasoning'].includes(arg)) { options.reasoning = next; i++; }
+  else if (['--include-reasoning'].includes(arg)) { options.includeReasoning = next === 'true' || next === '1'; i++; }
+  
+  // Image
+  else if (['-n', '--num'].includes(arg)) { options.n = parseInt(next) || 1; i++; }
+  else if (['-a', '--aspect'].includes(arg)) { options.aspectRatio = next; i++; }
+  else if (['-r', '--resolution'].includes(arg)) { options.resolution = next; i++; }
+  
+  // Other
+  else if (['--retry'].includes(arg)) { options.retry = parseInt(next) || 3; i++; }
+  else if (['-v', '--verbose'].includes(arg)) { options.verbose = true; }
+  else if (['-l', '--list-models'].includes(arg)) { options.listModels = true; }
+  else if (['-h', '--help'].includes(arg)) {
+    console.log(`
+OpenRouter Image CLI v2.0
+=========================
+Full OpenRouter API Support
+
+Usage: openrouter-img [options]
+
+CORE OPTIONS:
+  -p, --prompt <text>        Image prompt (required)
+  -m, --model <model>       Model (default: ${config.defaultModel})
+  -o, --output <file>       Custom output filename
+  -d, --dir <path>          Output directory (default: ~/Bilder)
+  -s, --system <text>        System prompt
+
+GENERATION PARAMS:
+  --max-tokens <N>          Max tokens (default: 4096)
+  --temperature <0-2>       Sampling temperature
+  --top-p <0-1>             Nucleus sampling
+  --top-k <N>               Top-k sampling
+  --stop <tokens>           Stop sequences (comma-separated)
+  --seed <N>                Random seed
+  --presence-penalty <-2-2>  Presence penalty
+  --frequency-penalty <-2-2>  Frequency penalty
+
+RESPONSE:
+  --response-format <json|text>  Response format
+
+REASONING (thinking models):
+  --reasoning <text>        Reasoning budget
+  --include-reasoning <bool> Include reasoning in response
+
+IMAGE OPTIONS:
+  -n, --num <N>             Number of images (default: 1)
+  -a, --aspect <ratio>      Aspect: 1:1, 16:9, 9:16, 4:3, 3:2, 21:9
+  -r, --resolution <res>   Resolution: 1024x1024, 1792x1024
+
+OTHER:
+  --retry <N>               Max retries (default: 3)
+  -l, --list-models         List image-capable models
+  -v, --verbose             Verbose output
+  -h, --help                Show this help
+
+EXAMPLES:
+  openrouter-img -p "sunset" -m sourceful/riverflow-v2-pro
+  openrouter-img -p "cyberpunk" -a 16:9 -r 1792x1024
+  openrouter-img -p "portrait" --temperature 0.8 --seed 42
+  openrouter-img -l
+
+API Docs: https://openrouter.ai/docs/api-reference/chat-completions
+
+Config: ${CONFIG_FILE}
+`);
+    process.exit(0);
+  }
+}
+
+if (!options.apiKey) { console.error('Error: No API key found'); process.exit(1); }
+
+// Ensure output dir exists
+if (!fs.existsSync(options.outputDir)) {
+  fs.mkdirSync(options.outputDir, { recursive: true });
+}
+
+function generateFilename(index = 0) {
+  const date = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const slug = (options.prompt || 'image').slice(0, 30).replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  const suffix = index > 0 ? `_${index}` : '';
+  return `img_${date}_${slug}${suffix}.png`;
+}
+
+function downloadImage(url, filepath) {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(filepath);
+    https.get(url, (response) => {
+      if (response.statusCode === 302 || response.statusCode === 301) {
+        file.close();
+        downloadImage(response.headers.location, filepath).then(resolve).catch(reject);
+        return;
+      }
+      response.pipe(file);
+      file.on('finish', () => { file.close(); resolve(filepath); });
+    }).on('error', (err) => { fs.unlink(filepath, () => {}); reject(err); });
+  });
+}
+
+function saveBase64Image(base64Data, filepath) {
+  const parts = base64Data.split(',');
+  const actualData = parts.length > 1 ? parts[1] : base64Data;
+  fs.writeFileSync(filepath, actualData, 'base64');
+}
+
+function apiRequest(payload) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(payload);
+    const req = https.request({
+      hostname: 'openrouter.ai',
+      path: '/api/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + options.apiKey,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(data)
+      }
+    }, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(body);
+          if (json.error) reject(new Error(json.error.message || JSON.stringify(json.error)));
+          else resolve(json);
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+async function listModels() {
+  console.log('\n🎨 OpenRouter Image-Capable Models\n');
+  
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: 'openrouter.ai',
+      path: '/api/v1/models',
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + options.apiKey }
+    }, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(body);
+          const allModels = json.data || [];
+          
+          const imageModels = allModels.filter(m => {
+            const output = m.architecture?.output_modalities || [];
+            const id = m.id?.toLowerCase() || '';
+            return output.includes('image') || 
+                   id.includes('image') || 
+                   id.includes('riverflow') ||
+                   id.includes('dall') ||
+                   id.includes('flux');
+          });
+          
+          if (imageModels.length > 0) {
+            console.log('┌─ Image Models ─────────────────────────┐');
+            for (const m of imageModels) {
+              console.log('│ ' + m.id.padEnd(40) + '│');
+            }
+            console.log('└────────────────────────────────────────┘\n');
+          }
+          
+          console.log('📝 Known Working Models (may not be in list):');
+          console.log('   sourceful/riverflow-v2-pro    (High quality)');
+          console.log('   sourceful/riverflow-v2-fast   (Fast)');
+          console.log('   google/gemini-2.5-flash-image');
+          console.log('   openai/gpt-5-image\n');
+          
+          resolve();
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function main() {
+  if (options.listModels) {
+    await listModels();
+    return;
+  }
+  
+  if (!options.prompt) {
+    console.error('Error: --prompt is required');
+    console.error('Usage: openrouter-img -p "your prompt"');
+    process.exit(1);
+  }
+  
+  if (options.verbose) {
+    console.log('🎨 OpenRouter Image Generation v2.0');
+    console.log('══════════════════════════════════════════════════════');
+    console.log('   Model:      ' + options.model);
+    console.log('   Prompt:     ' + options.prompt.slice(0, 60) + (options.prompt.length > 60 ? '...' : ''));
+    if (options.systemPrompt) console.log('   System:     ' + options.systemPrompt.slice(0, 40) + '...');
+    if (options.aspectRatio) console.log('   Aspect:     ' + options.aspectRatio);
+    if (options.resolution) console.log('   Resolution: ' + options.resolution);
+    if (options.temperature) console.log('   Temp:       ' + options.temperature);
+    if (options.maxTokens) console.log('   Max Tokens: ' + options.maxTokens);
+    if (options.seed) console.log('   Seed:       ' + options.seed);
+    if (options.n > 1) console.log('   Count:      ' + options.n);
+    console.log('   Output:     ' + options.outputDir);
+    console.log('══════════════════════════════════════════════════════\n');
+  }
+  
+  // Build messages array
+  const messages = [];
+  
+  if (options.systemPrompt) {
+    messages.push({ role: 'system', content: options.systemPrompt });
+  }
+  
+  // Build user prompt with image instructions
+  let userContent = options.prompt;
+  if (options.aspectRatio) userContent += `, aspect ratio ${options.aspectRatio}`;
+  if (options.resolution) userContent += `, resolution ${options.resolution}`;
+  userContent += ', high quality, detailed';
+  
+  messages.push({ role: 'user', content: userContent });
+  
+  // Build payload with ALL OpenRouter parameters
+  const payload = {
+    model: options.model,
+    messages: messages,
+    modalities: options.modalities
+  };
+  
+  // Add optional generation params
+  if (options.maxTokens) payload.max_tokens = options.maxTokens;
+  if (options.temperature !== null) payload.temperature = options.temperature;
+  if (options.topP !== null) payload.top_p = options.topP;
+  if (options.topK !== null) payload.top_k = options.topK;
+  if (options.stop) payload.stop = options.stop;
+  if (options.seed !== null) payload.seed = options.seed;
+  if (options.presencePenalty !== null) payload.presence_penalty = options.presencePenalty;
+  if (options.frequencyPenalty !== null) payload.frequency_penalty = options.frequencyPenalty;
+  if (options.responseFormat) payload.response_format = options.responseFormat;
+  if (options.reasoning) payload.reasoning = { effort: options.reasoning };
+  if (options.includeReasoning !== null) payload.include_reasoning = options.includeReasoning;
+  
+  let attempt = 0;
+  while (attempt < options.retry) {
+    attempt++;
+    try {
+      if (options.verbose) console.log('📡 Requesting... (attempt ' + attempt + '/' + options.retry + ')');
+      
+      const response = await apiRequest(payload);
+      
+      // Log usage if verbose
+      if (options.verbose && response.usage) {
+        console.log('   Usage: prompt=' + response.usage.prompt_tokens + 
+                    ' completion=' + response.usage.completion_tokens +
+                    ' total=' + response.usage.total_tokens);
+      }
+      
+      const message = response.choices?.[0]?.message;
+      if (!message) throw new Error('No message in response');
+      
+      // Extract images from various formats
+      let images = [];
+      
+      // Format 1: message.images (riverflow style)
+      if (message.images && Array.isArray(message.images)) {
+        for (const img of message.images) {
+          if (img.image_url?.url) images.push(img.image_url.url);
+          else if (img.url) images.push(img.url);
+          else if (typeof img === 'string') images.push(img);
+        }
+      }
+      
+      // Format 2: message.content blocks
+      if (images.length === 0 && message.content) {
+        if (typeof message.content === 'string') {
+          const matches = message.content.match(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/g);
+          if (matches) images.push(...matches);
+        } else if (Array.isArray(message.content)) {
+          for (const block of message.content) {
+            if (block.type === 'image_url' && block.image_url?.url) {
+              images.push(block.image_url.url);
+            }
+          }
+        }
+      }
+      
+      // Format 3: reasoning content
+      if (images.length === 0 && message.reasoning) {
+        const matches = message.reasoning.match(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/g);
+        if (matches) images.push(...matches);
+      }
+      
+      if (images.length === 0) {
+        // Check if model just returned text description
+        if (message.content && !message.content.startsWith('data:')) {
+          console.log('📝 Model response:');
+          console.log('   ' + message.content.slice(0, 200) + (message.content.length > 200 ? '...' : ''));
+        }
+        throw new Error('No images in response');
+      }
+      
+      console.log('✅ Generated ' + images.length + ' image(s)\n');
+      
+      for (let i = 0; i < images.length; i++) {
+        const imgData = images[i];
+        const filepath = path.join(options.outputDir, options.output || generateFilename(i));
+        
+        if (imgData.startsWith('data:')) {
+          saveBase64Image(imgData, filepath);
+          console.log('💾 Saved (base64): ' + filepath);
+        } else if (imgData.startsWith('http')) {
+          console.log('📎 Download: ' + imgData.slice(0, 60) + '...');
+          await downloadImage(imgData, filepath);
+          console.log('💾 Saved: ' + filepath);
+        }
+      }
+      
+      return;
+    } catch (err) {
+      if (attempt < options.retry) {
+        console.error('⚠️ Attempt ' + attempt + ' failed: ' + err.message);
+        await new Promise(r => setTimeout(r, attempt * 1000));
+      } else {
+        console.error('❌ Failed: ' + err.message);
+        process.exit(1);
+      }
+    }
+  }
+}
+
+main().catch(console.error);
